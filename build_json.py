@@ -21,7 +21,7 @@ import json
 import glob
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 
@@ -37,12 +37,27 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 GENERATED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def load(pattern: str) -> pd.DataFrame:
+def load(pattern: str, time_col: str = None) -> pd.DataFrame:
     files = sorted(glob.glob(str(DATA / pattern)))
     if not files:
         print(f"  ⚠️  No files: {DATA / pattern}")
         return pd.DataFrame()
-    dfs = [pd.read_parquet(f) for f in files]
+        
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+    dfs = []
+    
+    for f in files:
+        df = pd.read_parquet(f)
+        if time_col and time_col in df.columns:
+            ts = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+            df = df[ts >= cutoff]
+            
+        if not df.empty:
+            dfs.append(df)
+            
+    if not dfs:
+        return pd.DataFrame()
+        
     df  = pd.concat(dfs, ignore_index=True)
     print(f"  Loaded {len(df):,} rows from {len(files)} file(s)  [{pattern}]")
     return df
@@ -64,7 +79,7 @@ print("═"*55)
 
 # ── 1. Kalshi: monthly volume ─────────────────────────────────────
 print("\n[1] Kalshi monthly volume")
-kt = load("kalshi/trades/*.parquet")
+kt = load("kalshi/trades/*.parquet", time_col="created_time")
 if not kt.empty:
     kt["month"] = pd.to_datetime(kt["created_time"], errors="coerce", utc=True).dt.strftime("%Y-%m")
     out = (
@@ -161,7 +176,7 @@ if not km.empty:
 
 # ── 6. Polymarket: monthly volume ────────────────────────────────
 print("\n[6] Polymarket monthly volume")
-pt = load("polymarket/trades/*.parquet")
+pt = load("polymarket/trades/*.parquet", time_col="timestamp")
 if not pt.empty:
     pt["month"] = pd.to_datetime(pt["timestamp"], errors="coerce", utc=True).dt.strftime("%Y-%m")
     out = (
