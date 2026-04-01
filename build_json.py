@@ -44,12 +44,29 @@ def load(pattern: str, time_col: Optional[str] = None) -> pd.DataFrame:
         print(f"  ⚠️  No files: {DATA / pattern}")
         return pd.DataFrame()
         
-    cutoff = datetime.now(timezone.utc) - timedelta(days=180)
     dfs = []
     
+    # If we have a time column, we want to find the latest date in the set
+    # to make the 180-day window relative to the data, not 'today'.
+    cutoff = None
+    if time_col:
+        print(f"  Finding latest date for {pattern}...")
+        latest_dt: Optional[datetime] = None
+        # Check the last few files (usually where the latest data is)
+        for f in reversed(files[max(0, len(files)-3):]):
+            temp_df = pd.read_parquet(f, columns=[time_col])
+            if not temp_df.empty:
+                current_max = pd.to_datetime(temp_df[time_col], errors='coerce', utc=True).max()
+                if latest_dt is None or (current_max and current_max > latest_dt):
+                    latest_dt = current_max
+        
+        if latest_dt:
+            cutoff = latest_dt - timedelta(days=180)
+            print(f"  Dynamic cutoff: {cutoff} (Latest: {latest_dt})")
+
     for f in files:
         df = pd.read_parquet(f)
-        if time_col and time_col in df.columns:
+        if time_col and time_col in df.columns and cutoff:
             ts = pd.to_datetime(df[time_col], errors="coerce", utc=True)
             df = df[ts >= cutoff]
             
@@ -58,7 +75,7 @@ def load(pattern: str, time_col: Optional[str] = None) -> pd.DataFrame:
             
     if not dfs:
         return pd.DataFrame()
-        
+    
     df  = pd.concat(dfs, ignore_index=True)
     print(f"  Loaded {len(df):,} rows from {len(files)} file(s)  [{pattern}]")
     return df
