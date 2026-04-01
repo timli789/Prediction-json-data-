@@ -20,6 +20,7 @@ import argparse
 import json
 import glob
 import sys
+from typing import Optional
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -37,13 +38,13 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 GENERATED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def load(pattern: str, time_col: str = None) -> pd.DataFrame:
+def load(pattern: str, time_col: Optional[str] = None) -> pd.DataFrame:
     files = sorted(glob.glob(str(DATA / pattern)))
     if not files:
         print(f"  ⚠️  No files: {DATA / pattern}")
         return pd.DataFrame()
         
-    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=180)
     dfs = []
     
     for f in files:
@@ -98,7 +99,7 @@ if not kt.empty:
 
 # ── 2. Kalshi: calibration (price bucket → actual resolution rate) ─
 print("\n[2] Kalshi calibration")
-km = load("kalshi/markets/*.parquet")
+km = load("kalshi/markets/*.parquet", time_col="close_time")
 if not kt.empty and not km.empty:
     resolved = km[km["status"] == "finalized"][["ticker", "result"]].dropna()
     resolved = resolved[resolved["result"].isin(["yes", "no"])]
@@ -196,7 +197,7 @@ if not pt.empty:
 
 # ── 7. Polymarket: top 100 markets by USDC volume ────────────────
 print("\n[7] Polymarket top markets")
-pm = load("polymarket/markets/*.parquet")
+pm = load("polymarket/markets/*.parquet", time_col="closed")
 if not pt.empty:
     agg = (
         pt.groupby("condition_id")
