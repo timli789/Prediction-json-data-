@@ -1,0 +1,8 @@
+{
+  "generated_at": "2026-04-01T14:45:00Z",
+  "data": [
+    {"month": "2026-01", "total_contracts": 1250000.0, "num_trades": 8500.0, "active_markets": 450.0},
+    {"month": "2026-02", "total_contracts": 2500000.0, "num_trades": 12000.0, "active_markets": 550.0},
+    {"month": "2026-03", "total_contracts": 4800000.0, "num_trades": 22000.0, "active_markets": 890.0}
+  ]
+}
