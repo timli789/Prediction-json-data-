@@ -19,22 +19,17 @@ if not DB_URL:
 def get_connection():
     return psycopg2.connect(DB_URL)
 
-def sync_kalshi_trades():
+def sync_kalshi_trades(cur):
     print("\n[1] Syncing Kalshi Trades...")
     pattern = "kalshi/trades/*.parquet"
     if not list(DATA_DIR.glob(pattern)):
         print("  ⚠️ No Kalshi trade data found.")
         return
 
-    # 1. Load data via DuckDB
-    # We take the latest 500 records for a quick sync
+    # Load only latest 500
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY created_time DESC LIMIT 500").to_df()
     
-    # 2. Connect to CockroachDB
-    conn = get_connection()
-    cur = conn.cursor()
-    
-    # 3. Create Table
+    # Create Table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS kalshi_trades (
             ticker STRING,
@@ -47,10 +42,9 @@ def sync_kalshi_trades():
         );
     """)
     
-    # 4. Upsert Data
-    # CockroachDB UPSERT syntax: INSERT INTO ... ON CONFLICT (ID) DO UPDATE SET ...
     columns = ["ticker", "count", "yes_price", "no_price", "created_time", "side", "ID"]
-    data_tuples = [tuple(x) for x in df[columns].values]
+    df = df[columns].where(df.notnull(), None)
+    data_tuples = [tuple(x) for x in df.values]
     
     query = f"""
         INSERT INTO kalshi_trades ({", ".join(columns)})
@@ -63,14 +57,10 @@ def sync_kalshi_trades():
             created_time = EXCLUDED.created_time,
             side = EXCLUDED.side;
     """
-    
     execute_values(cur, query, data_tuples)
-    conn.commit()
     print(f"  ✓ Synced {len(df):,} Kalshi trades.")
-    cur.close()
-    conn.close()
 
-def sync_kalshi_markets():
+def sync_kalshi_markets(cur):
     print("\n[2] Syncing Kalshi Markets...")
     pattern = "kalshi/markets/*.parquet"
     if not list(DATA_DIR.glob(pattern)):
@@ -78,9 +68,6 @@ def sync_kalshi_markets():
         return
 
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY open_time DESC LIMIT 500").to_df()
-    
-    conn = get_connection()
-    cur = conn.cursor()
     
     cur.execute("""
         CREATE TABLE IF NOT EXISTS kalshi_markets (
@@ -95,7 +82,6 @@ def sync_kalshi_markets():
     """)
     
     columns = ["ticker", "title", "subtitle", "status", "result", "close_time", "open_time"]
-    # Ensure nested types/Nones are handled
     df = df[columns].where(df.notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
     
@@ -110,14 +96,10 @@ def sync_kalshi_markets():
             close_time = EXCLUDED.close_time,
             open_time = EXCLUDED.open_time;
     """
-    
     execute_values(cur, query, data_tuples)
-    conn.commit()
     print(f"  ✓ Synced {len(df):,} Kalshi markets.")
-    cur.close()
-    conn.close()
 
-def sync_polymarket_trades():
+def sync_polymarket_trades(cur):
     print("\n[3] Syncing Polymarket Trades...")
     pattern = "polymarket/trades/*.parquet"
     if not list(DATA_DIR.glob(pattern)):
@@ -126,11 +108,6 @@ def sync_polymarket_trades():
 
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY timestamp DESC LIMIT 500").to_df()
     
-    conn = get_connection()
-    cur = conn.cursor()
-    
-    # Polymarket trades use condition_id and a timestamp
-    # We'll use a combination or a unique ID if it exists in the parquet
     cur.execute("""
         CREATE TABLE IF NOT EXISTS poly_trades (
             condition_id STRING,
@@ -156,14 +133,10 @@ def sync_polymarket_trades():
             side = EXCLUDED.side,
             timestamp = EXCLUDED.timestamp;
     """
-    
     execute_values(cur, query, data_tuples)
-    conn.commit()
     print(f"  ✓ Synced {len(df):,} Polymarket trades.")
-    cur.close()
-    conn.close()
 
-def sync_polymarket_markets():
+def sync_polymarket_markets(cur):
     print("\n[4] Syncing Polymarket Markets...")
     pattern = "polymarket/markets/*.parquet"
     if not list(DATA_DIR.glob(pattern)):
@@ -171,9 +144,6 @@ def sync_polymarket_markets():
         return
 
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY closed DESC LIMIT 500").to_df()
-    
-    conn = get_connection()
-    cur = conn.cursor()
     
     cur.execute("""
         CREATE TABLE IF NOT EXISTS poly_markets (
@@ -198,19 +168,19 @@ def sync_polymarket_markets():
             outcome = EXCLUDED.outcome,
             closed = EXCLUDED.closed;
     """
-    
     execute_values(cur, query, data_tuples)
-    conn.commit()
     print(f"  ✓ Synced {len(df):,} Polymarket markets.")
-    cur.close()
-    conn.close()
 
 if __name__ == "__main__":
     try:
-        sync_kalshi_trades()
-        sync_kalshi_markets()
-        sync_polymarket_trades()
-        sync_polymarket_markets()
+        print(f"Connecting to CockroachDB...")
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                sync_kalshi_trades(cur)
+                sync_kalshi_markets(cur)
+                sync_polymarket_trades(cur)
+                sync_polymarket_markets(cur)
+                conn.commit()
         print("\n🚀 Database Sync Complete!")
     except Exception as e:
         print(f"\n❌ ERROR during sync: {e}")
