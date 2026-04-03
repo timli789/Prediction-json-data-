@@ -27,8 +27,8 @@ def sync_kalshi_trades():
         return
 
     # 1. Load data via DuckDB
-    # We take the last 30 days for a quick sync, or remove the filter for full backfill
-    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}')").to_df()
+    # We take the latest 500 records for a quick sync
+    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY created_time DESC LIMIT 500").to_df()
     
     # 2. Connect to CockroachDB
     conn = get_connection()
@@ -77,7 +77,7 @@ def sync_kalshi_markets():
         print("  ⚠️ No Kalshi market data found.")
         return
 
-    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}')").to_df()
+    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY open_time DESC LIMIT 500").to_df()
     
     conn = get_connection()
     cur = conn.cursor()
@@ -124,7 +124,7 @@ def sync_polymarket_trades():
         print("  ⚠️ No Polymarket trade data found.")
         return
 
-    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}')").to_df()
+    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY timestamp DESC LIMIT 500").to_df()
     
     conn = get_connection()
     cur = conn.cursor()
@@ -170,7 +170,7 @@ def sync_polymarket_markets():
         print("  ⚠️ No Polymarket market data found.")
         return
 
-    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}')").to_df()
+    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY closed DESC LIMIT 500").to_df()
     
     conn = get_connection()
     cur = conn.cursor()
