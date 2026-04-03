@@ -25,6 +25,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
+import duckdb
 
 # ── CLI ──────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
@@ -38,60 +39,47 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 GENERATED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def load(pattern: str, time_col: Optional[str] = None) -> pd.DataFrame:
-    files = sorted(glob.glob(str(DATA / pattern)))
+def get_cutoff(pattern: str, time_col: str, days: int = 180) -> Optional[datetime]:
+    """Finds the latest date in the parquet files and returns a cutoff date."""
+    files = list(DATA.glob(pattern))
     if not files:
-        print(f"  ⚠️  No files: {DATA / pattern}")
-        return pd.DataFrame()
-        
-    dfs = []
-    
-    # If we have a time column, we want to find the latest date in the set
-    # to make the 180-day window relative to the data, not 'today'.
-    cutoff = None
-    if time_col:
-        print(f"  Finding latest date for {pattern}...")
-        latest_dt: Optional[datetime] = None
-        
-        # Check last 3 files manually to avoid slicing lints
-        search_files = files[-3:] if len(files) >= 3 else files
-        for f in reversed(search_files):
-            temp_df = pd.read_parquet(f, columns=[time_col])
-            if not temp_df.empty:
-                vals = pd.to_datetime(temp_df[time_col], errors='coerce', utc=True)
-                current_max = vals.max()
-                if latest_dt is None or (current_max is not None and current_max > latest_dt):
-                    latest_dt = current_max
-        
-        if latest_dt is not None:
-            cutoff = latest_dt - timedelta(days=180)
-            print(f"  Dynamic cutoff: {cutoff} (Latest: {latest_dt})")
+        return None
+    try:
+        # Use DuckDB to quickly find the max timestamp across all files
+        sql = f"SELECT MAX({time_col}) FROM read_parquet('{DATA}/{pattern}')"
+        res = duckdb.sql(sql).fetchone()
+        if res and res[0]:
+            # DuckDB timestamps might be pydatetime or numpy.datetime64
+            latest = pd.to_datetime(res[0], utc=True)
+            return latest - timedelta(days=days)
+    except Exception as e:
+        print(f"  ⚠️ Error calculating cutoff for {pattern}: {e}")
+    return None
 
-    for f in files:
-        df = pd.read_parquet(f)
-        if time_col and time_col in df.columns and cutoff:
-            ts = pd.to_datetime(df[time_col], errors="coerce", utc=True)
-            df = df[ts >= cutoff]
-            
-        if not df.empty:
-            dfs.append(df)
-            
-    if not dfs:
+def load_df(pattern: str, time_col: Optional[str] = None, cutoff: Optional[datetime] = None) -> pd.DataFrame:
+    """Uses DuckDB to load parquet files into a Pandas DataFrame with optional filtering."""
+    path = DATA / pattern
+    if not list(DATA.glob(pattern)):
         return pd.DataFrame()
     
-    df  = pd.concat(dfs, ignore_index=True)
-    print(f"  Loaded {len(df):,} rows from {len(files)} file(s)  [{pattern}]")
-    return df
+    sql = f"SELECT * FROM read_parquet('{path}')"
+    if time_col and cutoff:
+        # Format cutoff for SQL
+        ts_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+        sql += f" WHERE {time_col} >= '{ts_str}'"
+    
+    return duckdb.sql(sql).to_df()
 
-def save(name: str, data: dict | list):
-    payload = {"generated_at": GENERATED_AT, "data": data}
-    path    = OUT / f"{name}.json"
-    text    = json.dumps(payload, default=str, separators=(",", ":"))
-    size_kb = len(text.encode()) / 1024
-    path.write_text(text)
-    print(f"  ✓ {name}.json  ({size_kb:.0f} KB,  {len(data) if isinstance(data, list) else '—'} rows)")
-    if size_kb > 3800:
-        print(f"    ⚠️  WARNING: file is {size_kb:.0f} KB — approaching Dune's 4096 KB limit!")
+def save(name: str, data: list):
+    """Saves data as a pre-aggregated JSON file for Dune."""
+    path = OUT / f"{name}.json"
+    payload = {
+        "generated_at": GENERATED_AT,
+        "data": data
+    }
+    # Use default=str to handle any nested datetime/numpy types
+    path.write_text(json.dumps(payload, indent=2, default=str))
+    print(f"  ✓ {name}.json ({len(data):,} records)")
 
 print("\n" + "═"*55)
 print("  Building JSON datasets for Dune LiveFetch")
@@ -100,7 +88,8 @@ print("═"*55)
 
 # ── 1. Kalshi: monthly volume ─────────────────────────────────────
 print("\n[1] Kalshi monthly volume")
-kt = load("kalshi/trades/*.parquet", time_col="created_time")
+cutoff_kt = get_cutoff("kalshi/trades/*.parquet", "created_time")
+kt = load_df("kalshi/trades/*.parquet", "created_time", cutoff_kt)
 if not kt.empty:
     kt["month"] = pd.to_datetime(kt["created_time"], errors="coerce", utc=True).dt.strftime("%Y-%m")
     out = (
@@ -119,7 +108,8 @@ if not kt.empty:
 
 # ── 2. Kalshi: calibration (price bucket → actual resolution rate) ─
 print("\n[2] Kalshi calibration")
-km = load("kalshi/markets/*.parquet", time_col="close_time")
+cutoff_km = get_cutoff("kalshi/markets/*.parquet", "close_time")
+km = load_df("kalshi/markets/*.parquet", "close_time", cutoff_km)
 if not kt.empty and not km.empty:
     resolved = km[km["status"] == "finalized"][["ticker", "result"]].dropna()
     resolved = resolved[resolved["result"].isin(["yes", "no"])]
@@ -197,7 +187,9 @@ if not km.empty:
 
 # ── 6. Polymarket: monthly volume ────────────────────────────────
 print("\n[6] Polymarket monthly volume")
-pt = load("polymarket/trades/*.parquet", time_col="timestamp")
+cutoff_pt = get_cutoff("polymarket/trades/*.parquet", "timestamp")
+pt = load_df("polymarket/trades/*.parquet", "timestamp", cutoff_pt)
+
 if not pt.empty:
     pt["month"] = pd.to_datetime(pt["timestamp"], errors="coerce", utc=True).dt.strftime("%Y-%m")
     out = (
@@ -217,7 +209,9 @@ if not pt.empty:
 
 # ── 7. Polymarket: top 100 markets by USDC volume ────────────────
 print("\n[7] Polymarket top markets")
-pm = load("polymarket/markets/*.parquet", time_col="closed")
+cutoff_pm = get_cutoff("polymarket/markets/*.parquet", "closed")
+pm = load_df("polymarket/markets/*.parquet", "closed", cutoff_pm)
+
 if not pt.empty:
     agg = (
         pt.groupby("condition_id")
@@ -306,7 +300,7 @@ for f in files:
 meta = {
     "generated_at": GENERATED_AT,
     "files": index,
-    "base_url": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/json_data/"
+    "base_url": "https://raw.githubusercontent.com/timli789/Prediction-json-data-/main/json_data/"
 }
 (OUT / "index.json").write_text(json.dumps(meta, indent=2))
 print(f"  ✓ index.json  ({len(index)} files listed)")
