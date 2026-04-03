@@ -3,6 +3,7 @@ import os
 import sys
 import duckdb
 import psycopg2
+import pandas as pd
 from psycopg2.extras import execute_values
 from pathlib import Path
 from datetime import datetime, timezone
@@ -22,40 +23,31 @@ def get_connection():
 def sync_kalshi_trades(cur):
     print("\n[1] Syncing Kalshi Trades...")
     pattern = "kalshi/trades/*.parquet"
-    if not list(DATA_DIR.glob(pattern)):
-        print("  ⚠️ No Kalshi trade data found.")
+    files = list(DATA_DIR.glob(pattern))
+    if not files:
+        print("  ⚠️ No Kalshi trade data found. Skipping.")
         return
 
-    # Load only latest 500
+    # Use DuckDB to find the most recent 500
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY created_time DESC LIMIT 500").to_df()
+    if df.empty: return
+
+    # Columns based on discovery or common Kalshi schema
+    cols = ["ticker", "count", "yes_price", "no_price", "created_time", "side", "ID"]
+    present_cols = [c for c in cols if c in df.columns]
     
-    # Create Table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS kalshi_trades (
-            ticker STRING,
-            count INT,
-            yes_price INT,
-            no_price INT,
-            created_time TIMESTAMPTZ,
-            side STRING,
-            ID STRING PRIMARY KEY
-        );
-    """)
+    cur.execute(f"DROP TABLE IF EXISTS kalshi_trades")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS kalshi_trades ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY (ID))")
     
-    columns = ["ticker", "count", "yes_price", "no_price", "created_time", "side", "ID"]
-    df = df[columns].where(df.notnull(), None)
+    # Robust null handling for NaT/NaN
+    df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
     
     query = f"""
-        INSERT INTO kalshi_trades ({", ".join(columns)})
+        INSERT INTO kalshi_trades ({", ".join(present_cols)})
         VALUES %s
         ON CONFLICT (ID) DO UPDATE SET
-            ticker = EXCLUDED.ticker,
-            count = EXCLUDED.count,
-            yes_price = EXCLUDED.yes_price,
-            no_price = EXCLUDED.no_price,
-            created_time = EXCLUDED.created_time,
-            side = EXCLUDED.side;
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != "ID"])}
     """
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Kalshi trades.")
@@ -63,38 +55,28 @@ def sync_kalshi_trades(cur):
 def sync_kalshi_markets(cur):
     print("\n[2] Syncing Kalshi Markets...")
     pattern = "kalshi/markets/*.parquet"
-    if not list(DATA_DIR.glob(pattern)):
-        print("  ⚠️ No Kalshi market data found.")
+    files = list(DATA_DIR.glob(pattern))
+    if not files:
+        print("  ⚠️ No Kalshi market data found. Skipping.")
         return
 
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY open_time DESC LIMIT 500").to_df()
+    if df.empty: return
+
+    cols = ["ticker", "title", "yes_sub_title", "no_sub_title", "status", "result", "close_time", "open_time"]
+    present_cols = [c for c in cols if c in df.columns]
+
+    cur.execute(f"DROP TABLE IF EXISTS kalshi_markets")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS kalshi_markets ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY (ticker))")
     
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS kalshi_markets (
-            ticker STRING PRIMARY KEY,
-            title STRING,
-            subtitle STRING,
-            status STRING,
-            result STRING,
-            close_time TIMESTAMPTZ,
-            open_time TIMESTAMPTZ
-        );
-    """)
-    
-    columns = ["ticker", "title", "subtitle", "status", "result", "close_time", "open_time"]
-    df = df[columns].where(df.notnull(), None)
+    df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
     
     query = f"""
-        INSERT INTO kalshi_markets ({", ".join(columns)})
+        INSERT INTO kalshi_markets ({", ".join(present_cols)})
         VALUES %s
         ON CONFLICT (ticker) DO UPDATE SET
-            title = EXCLUDED.title,
-            subtitle = EXCLUDED.subtitle,
-            status = EXCLUDED.status,
-            result = EXCLUDED.result,
-            close_time = EXCLUDED.close_time,
-            open_time = EXCLUDED.open_time;
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != "ticker"])}
     """
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Kalshi markets.")
@@ -102,36 +84,29 @@ def sync_kalshi_markets(cur):
 def sync_polymarket_trades(cur):
     print("\n[3] Syncing Polymarket Trades...")
     pattern = "polymarket/trades/*.parquet"
-    if not list(DATA_DIR.glob(pattern)):
-        print("  ⚠️ No Polymarket trade data found.")
+    files = list(DATA_DIR.glob(pattern))
+    if not files:
+        print("  ⚠️ No Polymarket trade data found. Skipping.")
         return
 
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY timestamp DESC LIMIT 500").to_df()
+    if df.empty: return
+
+    cols = ["condition_id", "size", "price", "side", "timestamp", "transaction_hash"]
+    present_cols = [c for c in cols if c in df.columns]
+
+    pk = "transaction_hash" if "transaction_hash" in present_cols else present_cols[0]
+    cur.execute(f"DROP TABLE IF EXISTS poly_trades")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS poly_trades ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY ({pk}))")
     
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS poly_trades (
-            condition_id STRING,
-            size FLOAT,
-            price FLOAT,
-            side STRING,
-            timestamp TIMESTAMPTZ,
-            transaction_hash STRING PRIMARY KEY
-        );
-    """)
-    
-    columns = ["condition_id", "size", "price", "side", "timestamp", "transaction_hash"]
-    df = df[columns].where(df.notnull(), None)
+    df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
     
     query = f"""
-        INSERT INTO poly_trades ({", ".join(columns)})
+        INSERT INTO poly_trades ({", ".join(present_cols)})
         VALUES %s
-        ON CONFLICT (transaction_hash) DO UPDATE SET
-            condition_id = EXCLUDED.condition_id,
-            size = EXCLUDED.size,
-            price = EXCLUDED.price,
-            side = EXCLUDED.side,
-            timestamp = EXCLUDED.timestamp;
+        ON CONFLICT ({pk}) DO UPDATE SET
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != pk])}
     """
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Polymarket trades.")
@@ -139,34 +114,29 @@ def sync_polymarket_trades(cur):
 def sync_polymarket_markets(cur):
     print("\n[4] Syncing Polymarket Markets...")
     pattern = "polymarket/markets/*.parquet"
-    if not list(DATA_DIR.glob(pattern)):
-        print("  ⚠️ No Polymarket market data found.")
+    files = list(DATA_DIR.glob(pattern))
+    if not files:
+        print("  ⚠️ No Polymarket market data found. Skipping.")
         return
 
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY closed DESC LIMIT 500").to_df()
+    if df.empty: return
+
+    cols = ["condition_id", "question", "outcomes", "volume", "closed", "end_date"]
+    present_cols = [c for c in cols if c in df.columns]
+
+    pk = "condition_id" if "condition_id" in present_cols else present_cols[0]
+    cur.execute(f"DROP TABLE IF EXISTS poly_markets")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS poly_markets ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY ({pk}))")
     
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS poly_markets (
-            condition_id STRING PRIMARY KEY,
-            question STRING,
-            outcome STRING,
-            closed TIMESTAMPTZ
-        );
-    """)
-    
-    columns = ["condition_id", "question", "outcome", "closed"]
-    # Filter columns and handle Nones
-    present_cols = [c for c in columns if c in df.columns]
-    df = df[present_cols].where(df.notnull(), None)
+    df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
     
     query = f"""
         INSERT INTO poly_markets ({", ".join(present_cols)})
         VALUES %s
-        ON CONFLICT (condition_id) DO UPDATE SET
-            question = EXCLUDED.question,
-            outcome = EXCLUDED.outcome,
-            closed = EXCLUDED.closed;
+        ON CONFLICT ({pk}) DO UPDATE SET
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != pk])}
     """
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Polymarket markets.")
@@ -185,3 +155,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ ERROR during sync: {e}")
         sys.exit(1)
+
+
