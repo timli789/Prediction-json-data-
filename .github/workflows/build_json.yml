@@ -28,7 +28,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install pandas pyarrow duckdb
+        run: pip install pandas pyarrow duckdb psycopg2-binary
 
       - name: Install zstd
         run: sudo apt-get install -y zstd
@@ -85,6 +85,11 @@ jobs:
 
       - name: Build JSON files
         run: python build_json.py --data-dir ./data --out-dir ./json_data
+
+      - name: Sync to CockroachDB
+        env:
+          COCKROACH_URL: ${{ secrets.COCKROACH_URL }}
+        run: python sync_to_db.py
 
       - name: Show output summary
         run: |
