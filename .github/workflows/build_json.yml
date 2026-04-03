@@ -5,14 +5,14 @@ on:
     - cron: "0 5 * * *"      # 05:00 UTC daily — after Jon typically pushes updates
   workflow_dispatch:          # manual trigger anytime from GitHub UI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: "Download Parquet → Build JSON → Commit"
     runs-on: ubuntu-latest
     timeout-minutes: 180
-
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     permissions:
       contents: write         # needed to commit json_data/ back to repo
