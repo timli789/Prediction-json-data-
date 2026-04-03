@@ -281,6 +281,18 @@ if not kt.empty:
             print(f"  ⚠️ No trades found for {yesterday_date}")
 
 
+# ── 11. Kalshi: Recent 500 Trades (No Aggregation) ──────────────
+print("\n[11] Kalshi recent 500 trades")
+if not kt.empty:
+    recent = (
+        kt.sort_values("created_time", ascending=False)
+          .head(500)
+          .copy()
+    )
+    # Convert to standard Python types for JSON saving
+    save("kalshi_recent_trades", recent.to_dict(orient="records"))
+
+
 # ── 9. Meta: index of all available files ────────────────────────
 print("\n[9] Meta index")
 files = sorted(OUT.glob("*.json"))

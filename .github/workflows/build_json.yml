@@ -64,9 +64,16 @@ jobs:
 
           echo "Download complete. Size: $(du -sh data.tar.zst)"
 
-      - name: Extract Parquet files
+      - name: Extract Parquet files (Selective Extraction)
         run: |
-          tar --use-compress-program=unzstd -xf data.tar.zst
+          # Only extract Kalshi and Polymarket subdirectories to save disk space
+          # Free GitHub runners only have ~14GB of disk space.
+          tar --use-compress-program=unzstd -xf data.tar.zst \
+            data/kalshi/markets/ \
+            data/kalshi/trades/ \
+            data/polymarket/markets/ \
+            data/polymarket/trades/
+          
           rm data.tar.zst
           echo "Extracted:"
           find data/ -name "*.parquet" | wc -l
