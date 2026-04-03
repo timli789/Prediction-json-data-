@@ -52,15 +52,18 @@ def load(pattern: str, time_col: Optional[str] = None) -> pd.DataFrame:
     if time_col:
         print(f"  Finding latest date for {pattern}...")
         latest_dt: Optional[datetime] = None
-        # Check the last few files (usually where the latest data is)
-        for f in reversed(files[max(0, len(files)-3):]):
+        
+        # Check last 3 files manually to avoid slicing lints
+        search_files = files[-3:] if len(files) >= 3 else files
+        for f in reversed(search_files):
             temp_df = pd.read_parquet(f, columns=[time_col])
             if not temp_df.empty:
-                current_max = pd.to_datetime(temp_df[time_col], errors='coerce', utc=True).max()
-                if latest_dt is None or (current_max and current_max > latest_dt):
+                vals = pd.to_datetime(temp_df[time_col], errors='coerce', utc=True)
+                current_max = vals.max()
+                if latest_dt is None or (current_max is not None and current_max > latest_dt):
                     latest_dt = current_max
         
-        if latest_dt:
+        if latest_dt is not None:
             cutoff = latest_dt - timedelta(days=180)
             print(f"  Dynamic cutoff: {cutoff} (Latest: {latest_dt})")
 
@@ -244,6 +247,38 @@ if not pt.empty:
     )
     dist["total_usdc"] = dist["total_usdc"].round(2)
     save("poly_price_distribution", dist.to_dict(orient="records"))
+
+
+# ── 10. Kalshi: Yesterday Snapshot ──────────────────────────────
+print("\n[10] Kalshi yesterday snapshot")
+if not kt.empty:
+    # Find the latest date in the dataset
+    latest_dt = pd.to_datetime(kt["created_time"], errors="coerce", utc=True).max()
+    if latest_dt:
+        yesterday_date = (latest_dt - timedelta(days=1)).date()
+        print(f"  Filtering for date: {yesterday_date}")
+        
+        y_trades = kt[pd.to_datetime(kt["created_time"], errors="coerce", utc=True).dt.date == yesterday_date]
+        
+        if not y_trades.empty:
+            y_summary = (
+                y_trades.groupby("ticker")
+                .agg(
+                    contracts=("count", "sum"),
+                    trades=("count", "count"),
+                    avg_price=("yes_price", "mean")
+                )
+                .reset_index()
+                .sort_values("contracts", ascending=False)
+            )
+            
+            # Enrich with market titles if available
+            if not km.empty:
+                y_summary = y_summary.merge(km[["ticker", "title"]], on="ticker", how="left")
+            
+            save("kalshi_yesterday", y_summary.to_dict(orient="records"))
+        else:
+            print(f"  ⚠️ No trades found for {yesterday_date}")
 
 
 # ── 9. Meta: index of all available files ────────────────────────
