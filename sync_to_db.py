@@ -32,22 +32,22 @@ def sync_kalshi_trades(cur):
     df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY created_time DESC LIMIT 500").to_df()
     if df.empty: return
 
-    # Columns based on discovery or common Kalshi schema
-    cols = ["ticker", "count", "yes_price", "no_price", "created_time", "side", "ID"]
+    # Corrected Kalshi trades schema
+    # PK is trade_id
+    cols = ["ticker", "count", "yes_price", "no_price", "created_time", "taker_side", "trade_id"]
     present_cols = [c for c in cols if c in df.columns]
     
     cur.execute(f"DROP TABLE IF EXISTS kalshi_trades")
-    cur.execute(f"CREATE TABLE IF NOT EXISTS kalshi_trades ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY (ID))")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS kalshi_trades ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY (trade_id))")
     
-    # Robust null handling for NaT/NaN
     df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
     
     query = f"""
         INSERT INTO kalshi_trades ({", ".join(present_cols)})
         VALUES %s
-        ON CONFLICT (ID) DO UPDATE SET
-            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != "ID"])}
+        ON CONFLICT (trade_id) DO UPDATE SET
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != "trade_id"])}
     """
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Kalshi trades.")
@@ -89,15 +89,22 @@ def sync_polymarket_trades(cur):
         print("  ⚠️ No Polymarket trade data found. Skipping.")
         return
 
-    df = duckdb.sql(f"SELECT * FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY timestamp DESC LIMIT 500").to_df()
+    # Use transaction_hash + log_index as unique ID
+    df = duckdb.sql(f"""
+        SELECT 
+            block_number, transaction_hash, log_index, maker, taker, maker_amount, taker_amount, timestamp,
+            (transaction_hash || '-' || log_index) as trade_id
+        FROM read_parquet('{DATA_DIR}/{pattern}') 
+        ORDER BY timestamp DESC 
+        LIMIT 500
+    """).to_df()
     if df.empty: return
 
-    cols = ["condition_id", "size", "price", "side", "timestamp", "transaction_hash"]
+    cols = ["block_number", "transaction_hash", "log_index", "maker", "taker", "maker_amount", "taker_amount", "timestamp", "trade_id"]
     present_cols = [c for c in cols if c in df.columns]
 
-    pk = "transaction_hash" if "transaction_hash" in present_cols else present_cols[0]
     cur.execute(f"DROP TABLE IF EXISTS poly_trades")
-    cur.execute(f"CREATE TABLE IF NOT EXISTS poly_trades ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY ({pk}))")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS poly_trades ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY (trade_id))")
     
     df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
     data_tuples = [tuple(x) for x in df.values]
@@ -105,8 +112,8 @@ def sync_polymarket_trades(cur):
     query = f"""
         INSERT INTO poly_trades ({", ".join(present_cols)})
         VALUES %s
-        ON CONFLICT ({pk}) DO UPDATE SET
-            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != pk])}
+        ON CONFLICT (trade_id) DO UPDATE SET
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != "trade_id"])}
     """
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Polymarket trades.")
