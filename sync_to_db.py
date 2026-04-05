@@ -148,6 +148,36 @@ def sync_polymarket_markets(cur):
     execute_values(cur, query, data_tuples)
     print(f"  ✓ Synced {len(df):,} Polymarket markets.")
 
+def sync_polymarket_blocks(cur):
+    print("\n[5] Syncing Polymarket Blocks...")
+    pattern = "polymarket/blocks/*.parquet"
+    files = list(DATA_DIR.glob(pattern))
+    if not files:
+        print("  ⚠️ No Polymarket block data found. Skipping.")
+        return
+
+    # Use DuckDB to find the most recent 500 blocks
+    df = duckdb.sql(f"SELECT block_number, timestamp FROM read_parquet('{DATA_DIR}/{pattern}') ORDER BY block_number DESC LIMIT 500").to_df()
+    if df.empty: return
+
+    cols = ["block_number", "timestamp"]
+    present_cols = [c for c in cols if c in df.columns]
+
+    cur.execute(f"DROP TABLE IF EXISTS poly_blocks")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS poly_blocks ({', '.join([f'{c} STRING' for c in present_cols])}, PRIMARY KEY (block_number))")
+    
+    df = df[present_cols].astype(object).where(df[present_cols].notnull(), None)
+    data_tuples = [tuple(x) for x in df.values]
+    
+    query = f"""
+        INSERT INTO poly_blocks ({", ".join(present_cols)})
+        VALUES %s
+        ON CONFLICT (block_number) DO UPDATE SET
+            {", ".join([f"{c} = EXCLUDED.{c}" for c in present_cols if c != "block_number"])}
+    """
+    execute_values(cur, query, data_tuples)
+    print(f"  ✓ Synced {len(df):,} Polymarket blocks.")
+
 if __name__ == "__main__":
     try:
         print(f"Connecting to CockroachDB...")
@@ -157,6 +187,7 @@ if __name__ == "__main__":
                 sync_kalshi_markets(cur)
                 sync_polymarket_trades(cur)
                 sync_polymarket_markets(cur)
+                sync_polymarket_blocks(cur)
                 conn.commit()
         print("\n🚀 Database Sync Complete!")
     except Exception as e:
